@@ -1,5 +1,5 @@
 {
-    "name": "neutron/sphinxsearch-api",
+    "name": "chebur/sphinxsearch-api",
     "description": "SphinxSearch PHP API",
     "require": {
         "php": ">=4"
@@ -8,6 +8,7 @@
     "type": "library",
     "keywords": ["Sphinx Search","search-engine","api"],
     "homepage": "http://sphinxsearch.com/",
+    "version": "2.0.9",
     "authors": [
         {
             "name": "Andrew Aksyonoff",
