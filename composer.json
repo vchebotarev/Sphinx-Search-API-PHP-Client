@@ -8,7 +8,7 @@
     "type": "library",
     "keywords": ["Sphinx Search","search-engine","api"],
     "homepage": "http://sphinxsearch.com/",
-    "version": "2.2.10",
+    "version": "2.2.11",
     "authors": [
         {
             "name": "Andrew Aksyonoff",
