@@ -42,9 +42,9 @@ define ( "SEARCHD_COMMAND_STATUS",		5 );
 define ( "SEARCHD_COMMAND_FLUSHATTRS",	7 );
 
 /// current client-side command implementation versions
-define ( "VER_COMMAND_SEARCH",		0x11E );
-define ( "VER_COMMAND_EXCERPT",		0x104 );
-define ( "VER_COMMAND_UPDATE",		0x103 );
+define ( "VER_COMMAND_SEARCH",		0x120 );
+define ( "VER_COMMAND_EXCERPT",		0x105 );
+define ( "VER_COMMAND_UPDATE",		0x104 );
 define ( "VER_COMMAND_KEYWORDS",	0x100 );
 define ( "VER_COMMAND_STATUS",		0x101 );
 define ( "VER_COMMAND_QUERY",		0x100 );
@@ -90,6 +90,7 @@ define ( "SPH_FILTER_VALUES",		0 );
 define ( "SPH_FILTER_RANGE",		1 );
 define ( "SPH_FILTER_FLOATRANGE",	2 );
 define ( "SPH_FILTER_STRING",	3 );
+define ( "SPH_FILTER_STRING_LIST",	6 );
 
 /// known attribute types
 define ( "SPH_ATTR_INTEGER",		1 );
@@ -110,6 +111,12 @@ define ( "SPH_GROUPBY_MONTH",		2 );
 define ( "SPH_GROUPBY_YEAR",		3 );
 define ( "SPH_GROUPBY_ATTR",		4 );
 define ( "SPH_GROUPBY_ATTRPAIR",	5 );
+
+/// known update types
+define ( "SPH_UPDATE_PLAIN",		0 );
+define ( "SPH_UPDATE_MVA",			1 );
+define ( "SPH_UPDATE_STRING",		2 );
+define ( "SPH_UPDATE_JSON",			3 );
 
 // important properties of PHP's integers:
 //  - always signed (one bit short of PHP_INT_SIZE)
@@ -158,6 +165,8 @@ function sphPackI64 ( $v )
 	{
 		if ( bccomp ( $v, 0 ) == -1 )
 			$v = bcadd ( "18446744073709551616", $v );
+		else if ( bccomp ( $v, "9223372036854775807" ) > 0 )
+			$v = "9223372036854775807"; // clamp at 2^63-1 like a boss (ie. like 64-bit php would)
 		$h = bcdiv ( $v, "4294967296", 0 );
 		$l = bcmod ( $v, "4294967296" );
 		return pack ( "NN", (float)$h, (float)$l ); // conversion to float is intentional; int would lose 31st bit
@@ -400,10 +409,10 @@ function sphSetBit ( $flag, $bit, $on )
 {
 	if ( $on )
 	{
-		$flag += ( 1<<$bit );
+		$flag |= ( 1<<$bit );
 	} else
 	{
-		$reset = 255 ^ ( 1<<$bit );
+		$reset = 16777215 ^ ( 1<<$bit );
 		$flag = $flag & $reset;
 	}
 	return $flag;
@@ -446,6 +455,9 @@ class SphinxClient
 	var $_outeroffset; ///< outer offset
 	var $_outerlimit; ///< outer limit
 	var $_hasouter;
+	var $_token_filter_library; ///< token_filter plugin library name
+	var $_token_filter_name; ///< token_filter plugin name
+	var $_token_filter_opts; ///< token_filter plugin options
 
 	var $_error;		///< last error message
 	var $_warning;		///< last warning message
@@ -461,7 +473,7 @@ class SphinxClient
 	/////////////////////////////////////////////////////////////////////////////
 
 	/// create a new client object and fill defaults
-	function SphinxClient ()
+	function __construct ()
 	{
 		// per-client-object settings
 		$this->_host		= "localhost";
@@ -501,6 +513,9 @@ class SphinxClient
 		$this->_outeroffset = 0;
 		$this->_outerlimit = 0;
 		$this->_hasouter = false;
+		$this->_token_filter_library = '';
+		$this->_token_filter_name = '';
+		$this->_token_filter_opts = '';
 
 		$this->_error		= ""; // per-reply fields (for single-query case)
 		$this->_warning		= "";
@@ -853,9 +868,8 @@ class SphinxClient
 	{
 		assert ( is_string($attribute) );
 		assert ( is_array($values) );
-		assert ( count($values) );
 
-		if ( is_array($values) && count($values) )
+		if ( count($values) )
 		{
 			foreach ( $values as $value )
 				assert ( is_numeric($value) );
@@ -872,6 +886,19 @@ class SphinxClient
 		assert ( is_string($value) );
 		$this->_filters[] = array ( "type"=>SPH_FILTER_STRING, "attr"=>$attribute, "exclude"=>$exclude, "value"=>$value );
 	}	
+	
+	/// set string list filter
+	function SetFilterStringList ( $attribute, $value, $exclude=false )
+	{
+		assert ( is_string($attribute) );
+		assert ( is_array($value) );
+		
+		foreach ( $value as $v )
+			assert ( is_string($v) );
+		
+		$this->_filters[] = array ( "type"=>SPH_FILTER_STRING_LIST, "attr"=>$attribute, "exclude"=>$exclude, "values"=>$value );
+	}	
+	
 
 	/// set range filter
 	/// only match records if $attribute value is beetwen $min and $max (inclusive)
@@ -973,7 +1000,7 @@ class SphinxClient
 	
 	function SetQueryFlag ( $flag_name, $flag_value )
 	{
-		$known_names = array ( "reverse_scan", "sort_method", "max_predicted_time", "boolean_simplify", "idf", "global_idf" );
+		$known_names = array ( "reverse_scan", "sort_method", "max_predicted_time", "boolean_simplify", "idf", "global_idf", "low_priority" );
 		$flags = array (
 		"reverse_scan" => array ( 0, 1 ),
 		"sort_method" => array ( "pq", "kbuffer" ),
@@ -981,6 +1008,7 @@ class SphinxClient
 		"boolean_simplify" => array ( true, false ),
 		"idf" => array ("normalized", "plain", "tfidf_normalized", "tfidf_unnormalized" ),
 		"global_idf" => array ( true, false ),
+		"low_priority" => array ( true, false )
 		);
 		
 		assert ( isset ( $flag_name, $known_names ) );
@@ -997,6 +1025,7 @@ class SphinxClient
 		if ( $flag_name=="idf" && ( $flag_value=="normalized" || $flag_value=="plain" ) )	$this->_query_flags = sphSetBit ( $this->_query_flags, 4, $flag_value=="plain" );
 		if ( $flag_name=="global_idf" )	$this->_query_flags = sphSetBit ( $this->_query_flags, 5, $flag_value );
 		if ( $flag_name=="idf" && ( $flag_value=="tfidf_normalized" || $flag_value=="tfidf_unnormalized" ) )	$this->_query_flags = sphSetBit ( $this->_query_flags, 6, $flag_value=="tfidf_normalized" );
+		if ( $flag_name=="low_priority" ) $this->_query_flags = sphSetBit ( $this->_query_flags, 8, $flag_value );
 	}
 	
 	/// set outer order by parameters
@@ -1014,6 +1043,17 @@ class SphinxClient
 		$this->_hasouter = true;
 	}
 
+	/// set outer order by parameters
+	function SetTokenFilter ( $library, $name, $opts="" )
+	{
+		assert ( is_string($library) );
+		assert ( is_string($name) );
+		assert ( is_string($opts) );
+		
+		$this->_token_filter_library = $library;
+		$this->_token_filter_name = $name;
+		$this->_token_filter_opts = $opts;
+	}
 	
 	//////////////////////////////////////////////////////////////////////////////
 
@@ -1131,6 +1171,12 @@ class SphinxClient
 					$req .= pack ( "N", strlen($filter["value"]) ) . $filter["value"];
 					break;
 
+				case SPH_FILTER_STRING_LIST:
+					$req .= pack ( "N", count($filter["values"]) );
+					foreach ( $filter["values"] as $value )
+						$req .= pack ( "N", strlen($value) ) . $value;
+					break;
+					
 				default:
 					assert ( 0 && "internal error: unhandled filter type" );
 			}
@@ -1207,6 +1253,11 @@ class SphinxClient
 			$req .= pack ( "N", 1 );
 		else
 			$req .= pack ( "N", 0 );
+		
+		// token_filter
+		$req .= pack ( "N", strlen($this->_token_filter_library) ) . $this->_token_filter_library;
+		$req .= pack ( "N", strlen($this->_token_filter_name) ) . $this->_token_filter_name;
+		$req .= pack ( "N", strlen($this->_token_filter_opts) ) . $this->_token_filter_opts;
 
 		// mbstring workaround
 		$this->_MBPop ();
@@ -1452,6 +1503,7 @@ class SphinxClient
 		if ( !isset($opts["before_match"]) )		$opts["before_match"] = "<b>";
 		if ( !isset($opts["after_match"]) )			$opts["after_match"] = "</b>";
 		if ( !isset($opts["chunk_separator"]) )		$opts["chunk_separator"] = " ... ";
+		if ( !isset($opts["field_separator"]) )		$opts["field_separator"] = "<br>";
 		if ( !isset($opts["limit"]) )				$opts["limit"] = 256;
 		if ( !isset($opts["limit_passages"]) )		$opts["limit_passages"] = 0;
 		if ( !isset($opts["limit_words"]) )			$opts["limit_words"] = 0;
@@ -1495,6 +1547,7 @@ class SphinxClient
 		$req .= pack ( "N", strlen($opts["before_match"]) ) . $opts["before_match"];
 		$req .= pack ( "N", strlen($opts["after_match"]) ) . $opts["after_match"];
 		$req .= pack ( "N", strlen($opts["chunk_separator"]) ) . $opts["chunk_separator"];
+		$req .= pack ( "N", strlen($opts["field_separator"]) ) . $opts["field_separator"];
 		$req .= pack ( "NN", (int)$opts["limit"], (int)$opts["around"] );
 		$req .= pack ( "NNN", (int)$opts["limit_passages"], (int)$opts["limit_words"], (int)$opts["start_passage_id"] ); // v.1.2
 		$req .= pack ( "N", strlen($opts["html_strip_mode"]) ) . $opts["html_strip_mode"];
@@ -1646,12 +1699,15 @@ class SphinxClient
 
 	/// batch update given attributes in given rows in given indexes
 	/// returns amount of updated documents (0 or more) on success, or -1 on failure
-	function UpdateAttributes ( $index, $attrs, $values, $mva=false, $ignorenonexistent=false )
+	function UpdateAttributes ( $index, $attrs, $values, $type=SPH_UPDATE_PLAIN, $ignorenonexistent=false )
 	{
 		// verify everything
 		assert ( is_string($index) );
-		assert ( is_bool($mva) );
 		assert ( is_bool($ignorenonexistent) );
+		assert ( $type==SPH_UPDATE_PLAIN || $type==SPH_UPDATE_MVA || $type==SPH_UPDATE_STRING || $type==SPH_UPDATE_JSON );
+
+		$mva = $type==SPH_UPDATE_MVA;
+		$string = $type==SPH_UPDATE_STRING || $type==SPH_UPDATE_JSON;
 
 		assert ( is_array($attrs) );
 		foreach ( $attrs as $attr )
@@ -1670,7 +1726,9 @@ class SphinxClient
 					assert ( is_array($v) );
 					foreach ( $v as $vv )
 						assert ( is_int($vv) );
-				} else
+				} else if ( $string )
+					assert ( is_string($v) );
+				else
 					assert ( is_int($v) );
 			}
 		}
@@ -1684,7 +1742,7 @@ class SphinxClient
 		foreach ( $attrs as $attr )
 		{
 			$req .= pack ( "N", strlen($attr) ) . $attr;
-			$req .= pack ( "N", $mva ? 1 : 0 );
+			$req .= pack ( "N", $type );
 		}
 
 		$req .= pack ( "N", count($values) );
@@ -1693,10 +1751,14 @@ class SphinxClient
 			$req .= sphPackU64 ( $id );
 			foreach ( $entry as $v )
 			{
-				$req .= pack ( "N", $mva ? count($v) : $v );
+				$nvalues = $mva ? count($v) : ( $string ? strlen($v) : $v );
+				$req .= pack ( "N", $nvalues );
 				if ( $mva )
+				{
 					foreach ( $v as $vv )
 						$req .= pack ( "N", $vv );
+				} else if ( $string )
+						$req .= $v;
 			}
 		}
 
@@ -1787,7 +1849,6 @@ class SphinxClient
 			return false;
 		}
 
-		$res = substr ( $response, 4 ); // just ignore length, error handling, etc
 		$p = 0;
 		list ( $rows, $cols ) = array_values ( unpack ( "N*N*", substr ( $response, $p, 8 ) ) ); $p += 8;
 
