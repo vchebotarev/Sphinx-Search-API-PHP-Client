@@ -66,8 +66,8 @@ define ( "SPH_MATCH_FULLSCAN",		5 );
 define ( "SPH_MATCH_EXTENDED2",		6 );	// extended engine V2 (TEMPORARY, WILL BE REMOVED)
 
 /// known ranking modes (ext2 only)
-define ( "SPH_RANK_PROXIMITY_BM25",	0 );	///< default mode, phrase proximity major factor and BM25 minor one
-define ( "SPH_RANK_BM25",			1 );	///< statistical mode, BM25 ranking only (faster but worse quality)
+define ( "SPH_RANK_PROXIMITY_BM15",	0 );	///< default mode, phrase proximity major factor and BM15 minor one
+define ( "SPH_RANK_BM15",			1 );	///< statistical mode, BM15 ranking only (faster but worse quality)
 define ( "SPH_RANK_NONE",			2 );	///< no ranking, all matches get a weight of 1
 define ( "SPH_RANK_WORDCOUNT",		3 );	///< simple word-count weighting, rank is a weighted sum of per-field keyword occurence counts
 define ( "SPH_RANK_PROXIMITY",		4 );
@@ -76,6 +76,9 @@ define ( "SPH_RANK_FIELDMASK",		6 );
 define ( "SPH_RANK_SPH04",			7 );
 define ( "SPH_RANK_EXPR",			8 );
 define ( "SPH_RANK_TOTAL",			9 );
+
+define ( "SPH_RANK_PROXIMITY_BM25",	0 );	///< alias for PROXIMITY_BM15; to be retired
+define ( "SPH_RANK_BM25",			1 );	///< alias for BM15; to be retired
 
 /// known sort modes
 define ( "SPH_SORT_RELEVANCE",		0 );
@@ -443,7 +446,7 @@ class SphinxClient
 	var $_retrydelay;	///< distributed retries delay
 	var $_anchor;		///< geographical anchor point
 	var $_indexweights;	///< per-index weights
-	var $_ranker;		///< ranking mode (default is SPH_RANK_PROXIMITY_BM25)
+	var $_ranker;		///< ranking mode (default is SPH_RANK_PROXIMITY_BM15)
 	var $_rankexpr;		///< ranking mode expression (for SPH_RANK_EXPR)
 	var $_maxquerytime;	///< max query time, milliseconds (default is 0, do not limit)
 	var $_fieldweights;	///< per-field-name weights
@@ -501,7 +504,7 @@ class SphinxClient
 		$this->_retrydelay	= 0;
 		$this->_anchor		= array ();
 		$this->_indexweights= array ();
-		$this->_ranker		= SPH_RANK_PROXIMITY_BM25;
+		$this->_ranker		= SPH_RANK_PROXIMITY_BM15;
 		$this->_rankexpr	= "";
 		$this->_maxquerytime= 0;
 		$this->_fieldweights= array();
