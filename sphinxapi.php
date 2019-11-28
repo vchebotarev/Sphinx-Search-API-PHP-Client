@@ -56,15 +56,6 @@ define ( "SEARCHD_ERROR",			1 );
 define ( "SEARCHD_RETRY",			2 );
 define ( "SEARCHD_WARNING",			3 );
 
-/// known match modes
-define ( "SPH_MATCH_ALL",			0 );
-define ( "SPH_MATCH_ANY",			1 );
-define ( "SPH_MATCH_PHRASE",		2 );
-define ( "SPH_MATCH_BOOLEAN",		3 );
-define ( "SPH_MATCH_EXTENDED",		4 );
-define ( "SPH_MATCH_FULLSCAN",		5 );
-define ( "SPH_MATCH_EXTENDED2",		6 );	// extended engine V2 (TEMPORARY, WILL BE REMOVED)
-
 /// known ranking modes (ext2 only)
 define ( "SPH_RANK_PROXIMITY_BM15",	0 );	///< default mode, phrase proximity major factor and BM15 minor one
 define ( "SPH_RANK_BM15",			1 );	///< statistical mode, BM15 ranking only (faster but worse quality)
@@ -86,7 +77,6 @@ define ( "SPH_SORT_ATTR_DESC",		1 );
 define ( "SPH_SORT_ATTR_ASC",		2 );
 define ( "SPH_SORT_TIME_SEGMENTS", 	3 );
 define ( "SPH_SORT_EXTENDED", 		4 );
-define ( "SPH_SORT_EXPR", 			5 );
 
 /// known filter types
 define ( "SPH_FILTER_VALUES",		0 );
@@ -429,8 +419,6 @@ class SphinxClient
 	var $_port;			///< searchd port (default is 9312)
 	var $_offset;		///< how many records to seek from result-set start (default is 0)
 	var $_limit;		///< how many records to return from result-set starting at offset (default is 20)
-	var $_mode;			///< query matching mode (default is SPH_MATCH_EXTENDED2)
-	var $_weights;		///< per-field weights (default is 1 for all fields)
 	var $_sort;			///< match sorting mode (default is SPH_SORT_RELEVANCE)
 	var $_sortby;		///< attribute to sort by (defualt is "")
 	var $_min_id;		///< min ID to match (default is 0, which means no limit)
@@ -444,13 +432,11 @@ class SphinxClient
 	var $_cutoff;		///< cutoff to stop searching at (default is 0)
 	var $_retrycount;	///< distributed retries count
 	var $_retrydelay;	///< distributed retries delay
-	var $_anchor;		///< geographical anchor point
 	var $_indexweights;	///< per-index weights
 	var $_ranker;		///< ranking mode (default is SPH_RANK_PROXIMITY_BM15)
 	var $_rankexpr;		///< ranking mode expression (for SPH_RANK_EXPR)
 	var $_maxquerytime;	///< max query time, milliseconds (default is 0, do not limit)
 	var $_fieldweights;	///< per-field-name weights
-	var $_overrides;	///< per-query attribute values overrides
 	var $_select;		///< select-list (attributes or expressions, with optional aliases)
 	var $_query_flags; ///< per-query various flags
 	var $_predictedtime; ///< per-query max_predicted_time
@@ -487,8 +473,6 @@ class SphinxClient
 		// per-query settings
 		$this->_offset		= 0;
 		$this->_limit		= 20;
-		$this->_mode		= SPH_MATCH_EXTENDED2;
-		$this->_weights		= array ();
 		$this->_sort		= SPH_SORT_RELEVANCE;
 		$this->_sortby		= "";
 		$this->_min_id		= 0;
@@ -502,13 +486,11 @@ class SphinxClient
 		$this->_cutoff		= 0;
 		$this->_retrycount	= 0;
 		$this->_retrydelay	= 0;
-		$this->_anchor		= array ();
 		$this->_indexweights= array ();
 		$this->_ranker		= SPH_RANK_PROXIMITY_BM15;
 		$this->_rankexpr	= "";
 		$this->_maxquerytime= 0;
 		$this->_fieldweights= array();
-		$this->_overrides 	= array();
 		$this->_select		= "*";
 		$this->_query_flags = sphSetBit ( 0, 6, true ); // default idf=tfidf_normalized
 		$this->_predictedtime = 0;
@@ -783,20 +765,6 @@ class SphinxClient
 		$this->_maxquerytime = $max;
 	}
 
-	/// set matching mode
-	function SetMatchMode ( $mode )
-	{
-		trigger_error ( 'DEPRECATED: Do not call this method or, even better, use SphinxQL instead of an API', E_USER_DEPRECATED );
-		assert ( $mode==SPH_MATCH_ALL
-			|| $mode==SPH_MATCH_ANY
-			|| $mode==SPH_MATCH_PHRASE
-			|| $mode==SPH_MATCH_BOOLEAN
-			|| $mode==SPH_MATCH_EXTENDED
-			|| $mode==SPH_MATCH_FULLSCAN
-			|| $mode==SPH_MATCH_EXTENDED2 );
-		$this->_mode = $mode;
-	}
-
 	/// set ranking mode
 	function SetRankingMode ( $ranker, $rankexpr="" )
 	{
@@ -814,8 +782,7 @@ class SphinxClient
 			$mode==SPH_SORT_ATTR_DESC ||
 			$mode==SPH_SORT_ATTR_ASC ||
 			$mode==SPH_SORT_TIME_SEGMENTS ||
-			$mode==SPH_SORT_EXTENDED ||
-			$mode==SPH_SORT_EXPR );
+			$mode==SPH_SORT_EXTENDED );
 		assert ( is_string($sortby) );
 		assert ( $mode==SPH_SORT_RELEVANCE || strlen($sortby)>0 );
 
@@ -927,19 +894,6 @@ class SphinxClient
 		$this->_filters[] = array ( "type"=>SPH_FILTER_FLOATRANGE, "attr"=>$attribute, "exclude"=>$exclude, "min"=>$min, "max"=>$max );
 	}
 
-	/// setup anchor point for geosphere distance calculations
-	/// required to use @geodist in filters and sorting
-	/// latitude and longitude must be in radians
-	function SetGeoAnchor ( $attrlat, $attrlong, $lat, $long )
-	{
-		assert ( is_string($attrlat) );
-		assert ( is_string($attrlong) );
-		assert ( is_float($lat) );
-		assert ( is_float($long) );
-
-		$this->_anchor = array ( "attrlat"=>$attrlat, "attrlong"=>$attrlong, "lat"=>$lat, "long"=>$long );
-	}
-
 	/// set grouping attribute and function
 	function SetGroupBy ( $attribute, $func, $groupsort="@group desc" )
 	{
@@ -979,19 +933,6 @@ class SphinxClient
 	{
 		assert ( is_bool($arrayresult) );
 		$this->_arrayresult = $arrayresult;
-	}
-
-	/// set attribute values override
-	/// there can be only one override per attribute
-	/// $values must be a hash that maps document IDs to attribute values
-	function SetOverride ( $attrname, $attrtype, $values )
-	{
-		trigger_error('DEPRECATED: Do not call this method. Use SphinxQL REMAP() function instead.', E_USER_DEPRECATED);
-		assert ( is_string ( $attrname ) );
-		assert ( in_array ( $attrtype, array ( SPH_ATTR_INTEGER, SPH_ATTR_TIMESTAMP, SPH_ATTR_BOOL, SPH_ATTR_FLOAT, SPH_ATTR_BIGINT ) ) );
-		assert ( is_array ( $values ) );
-
-		$this->_overrides[$attrname] = array ( "attr"=>$attrname, "type"=>$attrtype, "values"=>$values );
 	}
 
 	/// set select-list (attributes or expressions), SQL-like syntax
@@ -1064,7 +1005,6 @@ class SphinxClient
 	function ResetFilters ()
 	{
 		$this->_filters = array();
-		$this->_anchor = array();
 	}
 
 	/// clear groupby settings (for multi-queries)
@@ -1076,12 +1016,6 @@ class SphinxClient
 		$this->_groupdistinct= "";
 	}
 
-	/// clear all attribute value overrides (for multi-queries)
-	function ResetOverrides ()
-    {
-    	$this->_overrides = array ();
-    }
-	
 	function ResetQueryFlag ()
 	{
 		$this->_query_flags = sphSetBit ( 0, 6, true ); // default idf=tfidf_normalized
@@ -1135,15 +1069,14 @@ class SphinxClient
 		$this->_MBPush ();
 
 		// build request
-		$req = pack ( "NNNNN", $this->_query_flags, $this->_offset, $this->_limit, $this->_mode, $this->_ranker );
+		// 6 == match_mode extended2
+		$req = pack ( "NNNNN", $this->_query_flags, $this->_offset, $this->_limit, 6, $this->_ranker );
 		if ( $this->_ranker==SPH_RANK_EXPR )
 			$req .= pack ( "N", strlen($this->_rankexpr) ) . $this->_rankexpr;
 		$req .= pack ( "N", $this->_sort ); // (deprecated) sort mode
 		$req .= pack ( "N", strlen($this->_sortby) ) . $this->_sortby;
 		$req .= pack ( "N", strlen($query) ) . $query; // query itself
-		$req .= pack ( "N", count($this->_weights) ); // weights
-		foreach ( $this->_weights as $weight )
-			$req .= pack ( "N", (int)$weight );
+		$req .= pack ( "N", 0 ); // weights
 		$req .= pack ( "N", strlen($index) ) . $index; // indexes
 		$req .= pack ( "N", 1 ); // id64 range marker
 		$req .= sphPackU64 ( $this->_min_id ) . sphPackU64 ( $this->_max_id ); // id64 range
@@ -1193,18 +1126,8 @@ class SphinxClient
 		$req .= pack ( "NNN", $this->_cutoff, $this->_retrycount, $this->_retrydelay );
 		$req .= pack ( "N", strlen($this->_groupdistinct) ) . $this->_groupdistinct;
 
-		// anchor point
-		if ( empty($this->_anchor) )
-		{
-			$req .= pack ( "N", 0 );
-		} else
-		{
-			$a =& $this->_anchor;
-			$req .= pack ( "N", 1 );
-			$req .= pack ( "N", strlen($a["attrlat"]) ) . $a["attrlat"];
-			$req .= pack ( "N", strlen($a["attrlong"]) ) . $a["attrlong"];
-			$req .= $this->_PackFloat ( $a["lat"] ) . $this->_PackFloat ( $a["long"] );
-		}
+		// geoanchor point
+		$req .= pack ( "N", 0 );
 
 		// per-index weights
 		$req .= pack ( "N", count($this->_indexweights) );
@@ -1223,25 +1146,7 @@ class SphinxClient
 		$req .= pack ( "N", strlen($comment) ) . $comment;
 
 		// attribute overrides
-		$req .= pack ( "N", count($this->_overrides) );
-		foreach ( $this->_overrides as $key => $entry )
-		{
-			$req .= pack ( "N", strlen($entry["attr"]) ) . $entry["attr"];
-			$req .= pack ( "NN", $entry["type"], count($entry["values"]) );
-			foreach ( $entry["values"] as $id=>$val )
-			{
-				assert ( is_numeric($id) );
-				assert ( is_numeric($val) );
-
-				$req .= sphPackU64 ( $id );
-				switch ( $entry["type"] )
-				{
-					case SPH_ATTR_FLOAT:	$req .= $this->_PackFloat ( $val ); break;
-					case SPH_ATTR_BIGINT:	$req .= sphPackI64 ( $val ); break;
-					default:				$req .= pack ( "N", $val ); break;
-				}
-			}
-		}
+		$req .= pack ( "N", 0 );
 
 		// select-list
 		$req .= pack ( "N", strlen($this->_select) ) . $this->_select;
